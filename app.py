@@ -117,11 +117,11 @@ def check_auth() -> bool:
 # SHEET LOADING
 # ============================================================================
 
-@st.cache_data(ttl=300, show_spinner="Loading data from Google Sheet…")
+@st.cache_data(ttl=1800, show_spinner="Loading data from Google Sheet…")
 def load_sheet_rows():
     """
     Fetch rows from the current-month tab.
-    Cached for 5 minutes. Manual refresh clears the cache.
+    Cached for 30 minutes. Manual refresh clears the cache.
     Returns (rows_list, actual_tab_title).
     """
     creds_json = json.loads(st.secrets["GOOGLE_CREDENTIALS_JSON"])
@@ -152,22 +152,21 @@ def load_sheet_rows():
             f"Available tabs: {available}"
         )
 
-    # Manually parse rows to handle duplicate headers in the sheet
-    # (the sheet has "Type" twice and some empty header cells).
-    # Only fetch columns A-K (Date through Live Status) — the performance
-    # metric columns beyond that make requests huge and cause 503 timeouts.
+    # Fetch only columns A-K (Date through Live Status) with BOUNDED range.
+    # Open-ended "A:K" queries can hang on large sheets. A1:K5000 covers
+    # any realistic month of data and returns fast.
     import time
     raw = None
+    last_error = None
     for attempt in range(3):
         try:
-            raw = tab.get("A:K")
+            raw = tab.get("A1:K5000")
             break
         except Exception as e:
-            if "503" in str(e) or "unavailable" in str(e).lower():
-                if attempt < 2:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-            raise
+            last_error = e
+            time.sleep(2 * (attempt + 1))
+    if raw is None:
+        raise last_error if last_error else RuntimeError("Failed to fetch sheet")
 
     if not raw or len(raw) < 2:
         return [], tab.title
@@ -178,7 +177,6 @@ def load_sheet_rows():
         "Agency", "Script name", "Ad Link", "Copy team QC",
         "Video Status", "Live Status",
     ]
-    # For each wanted column, use the FIRST occurrence in the header row
     col_idx = {}
     for name in wanted_cols:
         for i, h in enumerate(header):
@@ -188,7 +186,6 @@ def load_sheet_rows():
 
     rows = []
     for r in raw[1:]:
-        # Skip fully empty rows
         if not any(str(c).strip() for c in r):
             continue
         row_dict = {}
