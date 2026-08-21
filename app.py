@@ -152,7 +152,50 @@ def load_sheet_rows():
             f"Available tabs: {available}"
         )
 
-    rows = tab.get_all_records(head=1, default_blank="")
+    # Manually parse rows to handle duplicate headers in the sheet
+    # (the sheet has "Type" twice and some empty header cells).
+    # Only fetch columns A-K (Date through Live Status) — the performance
+    # metric columns beyond that make requests huge and cause 503 timeouts.
+    import time
+    raw = None
+    for attempt in range(3):
+        try:
+            raw = tab.get("A:K")
+            break
+        except Exception as e:
+            if "503" in str(e) or "unavailable" in str(e).lower():
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+            raise
+
+    if not raw or len(raw) < 2:
+        return [], tab.title
+
+    header = raw[0]
+    wanted_cols = [
+        "Date", "Type", "Language", "Video Editor", "Requirement Type",
+        "Agency", "Script name", "Ad Link", "Copy team QC",
+        "Video Status", "Live Status",
+    ]
+    # For each wanted column, use the FIRST occurrence in the header row
+    col_idx = {}
+    for name in wanted_cols:
+        for i, h in enumerate(header):
+            if str(h).strip() == name:
+                col_idx[name] = i
+                break
+
+    rows = []
+    for r in raw[1:]:
+        # Skip fully empty rows
+        if not any(str(c).strip() for c in r):
+            continue
+        row_dict = {}
+        for name, i in col_idx.items():
+            row_dict[name] = r[i] if i < len(r) else ""
+        rows.append(row_dict)
+
     return rows, tab.title
 
 
